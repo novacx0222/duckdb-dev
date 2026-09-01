@@ -59,7 +59,7 @@ bool TryGetDatePartSpecifier(const string &specifier_p, DatePartSpecifier &resul
 		// ISO year (first week of the year may be in previous year)
 		result = DatePartSpecifier::ISOYEAR;
 	} else if (specifier == "era") {
-		result = DatePartSpecifier::ERA;
+		result = DatePartSpecifier::ERA_PART;
 	} else if (specifier == "timezone") {
 		result = DatePartSpecifier::TIMEZONE;
 	} else if (specifier == "timezone_hour") {

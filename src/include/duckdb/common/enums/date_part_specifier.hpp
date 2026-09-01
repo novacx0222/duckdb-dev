@@ -32,7 +32,7 @@ enum class DatePartSpecifier : uint8_t {
 	QUARTER,
 	DOY,
 	YEARWEEK,
-	ERA,
+	ERA_PART,
 	TIMEZONE,
 	TIMEZONE_HOUR,
 	TIMEZONE_MINUTE,

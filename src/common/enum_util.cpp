@@ -1398,7 +1398,7 @@ const StringUtil::EnumStringLiteral *GetDatePartSpecifierValues() {
 		{ static_cast<uint32_t>(DatePartSpecifier::QUARTER), "QUARTER" },
 		{ static_cast<uint32_t>(DatePartSpecifier::DOY), "DOY" },
 		{ static_cast<uint32_t>(DatePartSpecifier::YEARWEEK), "YEARWEEK" },
-		{ static_cast<uint32_t>(DatePartSpecifier::ERA), "ERA" },
+		{ static_cast<uint32_t>(DatePartSpecifier::ERA_PART), "ERA_PART" },
 		{ static_cast<uint32_t>(DatePartSpecifier::TIMEZONE), "TIMEZONE" },
 		{ static_cast<uint32_t>(DatePartSpecifier::TIMEZONE_HOUR), "TIMEZONE_HOUR" },
 		{ static_cast<uint32_t>(DatePartSpecifier::TIMEZONE_MINUTE), "TIMEZONE_MINUTE" },

@@ -35,7 +35,7 @@ DatePartSpecifier GetDateTypePartSpecifier(const string &specifier, LogicalType 
 		case DatePartSpecifier::QUARTER:
 		case DatePartSpecifier::DOY:
 		case DatePartSpecifier::YEARWEEK:
-		case DatePartSpecifier::ERA:
+		case DatePartSpecifier::ERA_PART:
 		case DatePartSpecifier::EPOCH:
 		case DatePartSpecifier::JULIAN_DAY:
 			return part;
@@ -629,7 +629,7 @@ struct DatePart {
 				case DatePartSpecifier::CENTURY:
 				case DatePartSpecifier::MILLENNIUM:
 				case DatePartSpecifier::QUARTER:
-				case DatePartSpecifier::ERA:
+				case DatePartSpecifier::ERA_PART:
 					mask |= YMD;
 					break;
 				case DatePartSpecifier::YEARWEEK:
@@ -720,7 +720,7 @@ struct DatePart {
 				if (bigint_data) {
 					bigint_data[idx] = QuarterOperator::QuarterFromMonth(mm);
 				}
-				bigint_data = HasPartValue(bigint_values, DatePartSpecifier::ERA);
+				bigint_data = HasPartValue(bigint_values, DatePartSpecifier::ERA_PART);
 				if (bigint_data) {
 					bigint_data[idx] = EraOperator::EraFromYear(yyyy);
 				}
@@ -1741,7 +1741,7 @@ int64_t ExtractElement(DatePartSpecifier type, T element) {
 		return DatePart::MinutesOperator::template Operation<T, int64_t>(element);
 	case DatePartSpecifier::HOUR:
 		return DatePart::HoursOperator::template Operation<T, int64_t>(element);
-	case DatePartSpecifier::ERA:
+	case DatePartSpecifier::ERA_PART:
 		return DatePart::EraOperator::template Operation<T, int64_t>(element);
 	case DatePartSpecifier::TIMEZONE:
 		return DatePart::TimezoneOperator::template Operation<T, int64_t>(element);

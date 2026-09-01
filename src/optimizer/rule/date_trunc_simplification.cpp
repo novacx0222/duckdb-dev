@@ -326,7 +326,7 @@ string DateTruncSimplificationRule::DatePartToFunc(const DatePartSpecifier &date
 	case DatePartSpecifier::DOY:
 	case DatePartSpecifier::ISOYEAR:
 	case DatePartSpecifier::YEARWEEK:
-	case DatePartSpecifier::ERA:
+	case DatePartSpecifier::ERA_PART:
 	case DatePartSpecifier::TIMEZONE:
 	case DatePartSpecifier::TIMEZONE_HOUR:
 	case DatePartSpecifier::TIMEZONE_MINUTE:
