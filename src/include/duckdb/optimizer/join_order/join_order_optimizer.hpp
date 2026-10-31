@@ -23,6 +23,8 @@
 
 namespace duckdb {
 
+class LogicalAggregate;
+
 class JoinOrderOptimizer {
 public:
 	explicit JoinOrderOptimizer(ClientContext &context);
@@ -64,6 +66,12 @@ private:
 
 public:
 	unordered_set<idx_t> recursive_cte_indexes;
+	//! The aggregate directly above the plan being optimized, if there is one
+	optional_ptr<const LogicalAggregate> mpf_aggregate;
+
+private:
+	//! Reports whether the plan below `mpf_aggregate` is an MPF query
+	void ReportMPFQuery(bool reorderable);
 };
 
 } // namespace duckdb

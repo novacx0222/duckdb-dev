@@ -265,9 +265,10 @@ bool RelationManager::ExtractJoinRelations(JoinOrderOptimizer &optimizer, Logica
 	case LogicalOperatorType::LOGICAL_AGGREGATE_AND_GROUP_BY: {
 		// optimize children
 		RelationStats child_stats;
-		auto child_optimizer = optimizer.CreateChildOptimizer();
-		op->children[0] = child_optimizer.Optimize(std::move(op->children[0]), &child_stats);
 		auto &aggr = op->Cast<LogicalAggregate>();
+		auto child_optimizer = optimizer.CreateChildOptimizer();
+		child_optimizer.mpf_aggregate = &aggr;
+		op->children[0] = child_optimizer.Optimize(std::move(op->children[0]), &child_stats);
 		auto operator_stats = RelationStatisticsHelper::ExtractAggregationStats(aggr, child_stats);
 		// the extracted cardinality should be set for aggregate
 		aggr.SetEstimatedCardinality(operator_stats.cardinality);

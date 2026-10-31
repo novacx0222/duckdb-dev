@@ -3,7 +3,9 @@
 #include "duckdb/common/enums/join_type.hpp"
 #include "duckdb/common/limits.hpp"
 #include "duckdb/common/pair.hpp"
+#include "duckdb/common/printer.hpp"
 #include "duckdb/optimizer/join_order/cost_model.hpp"
+#include "duckdb/optimizer/join_order/mpf_query.hpp"
 #include "duckdb/optimizer/join_order/plan_enumerator.hpp"
 #include "duckdb/planner/expression/list.hpp"
 #include "duckdb/planner/operator/list.hpp"
@@ -39,6 +41,9 @@ unique_ptr<LogicalOperator> JoinOrderOptimizer::Optimize(unique_ptr<LogicalOpera
 	// extract the relations that go into the hyper graph.
 	// We optimize the children of any non-reorderable operations we come across.
 	bool reorderable = query_graph_manager.Build(*this, *op);
+	if (mpf_aggregate && MPFQuery::IsEnabled(context)) {
+		ReportMPFQuery(reorderable);
+	}
 
 	// get relation_stats here since the reconstruction process will move all relations.
 	auto relation_stats = query_graph_manager.relation_manager.GetRelationStats();
@@ -84,6 +89,16 @@ unique_ptr<LogicalOperator> JoinOrderOptimizer::Optimize(unique_ptr<LogicalOpera
 	}
 
 	return new_logical_plan;
+}
+
+void JoinOrderOptimizer::ReportMPFQuery(bool reorderable) {
+	if (!reorderable) {
+		Printer::Print("[mpf] rejected: no join graph");
+		return;
+	}
+	string reason;
+	auto query = MPFQuery::TryBuild(*mpf_aggregate, query_graph_manager, reason);
+	Printer::Print(query ? query->ToString() : "[mpf] rejected: " + reason);
 }
 
 void JoinOrderOptimizer::AddMaterializedCTEStats(idx_t index, RelationStats &&stats) {
