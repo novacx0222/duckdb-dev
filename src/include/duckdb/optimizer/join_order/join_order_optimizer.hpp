@@ -24,10 +24,14 @@
 namespace duckdb {
 
 class LogicalAggregate;
+class Optimizer;
+struct MPFPlanNode;
+struct MPFQuery;
+class MPFPlanEnumerator;
 
 class JoinOrderOptimizer {
 public:
-	explicit JoinOrderOptimizer(ClientContext &context);
+	explicit JoinOrderOptimizer(Optimizer &optimizer);
 	JoinOrderOptimizer CreateChildOptimizer();
 
 public:
@@ -41,6 +45,7 @@ public:
 	RelationStats GetDelimScanStats();
 
 private:
+	Optimizer &optimizer;
 	ClientContext &context;
 
 	//! manages the query graph, relations, and edges between relations
@@ -67,11 +72,13 @@ private:
 public:
 	unordered_set<idx_t> recursive_cte_indexes;
 	//! The aggregate directly above the plan being optimized, if there is one
-	optional_ptr<const LogicalAggregate> mpf_aggregate;
+	optional_ptr<LogicalAggregate> mpf_aggregate;
 
 private:
-	//! Reports whether the plan below `mpf_aggregate` is an MPF query, and its candidate plans
-	void ReportMPFQuery(bool reorderable);
+	//! Reports whether the plan below `mpf_aggregate` is an MPF query, and its candidate plans.
+	//! Returns the candidate that SET mpf_force_plan selects, if there is one.
+	optional_ptr<const MPFPlanNode> ChooseMPFPlan(bool reorderable, unique_ptr<MPFQuery> &query,
+	                                              unique_ptr<MPFPlanEnumerator> &enumerator);
 };
 
 } // namespace duckdb

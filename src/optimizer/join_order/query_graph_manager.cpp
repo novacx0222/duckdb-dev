@@ -3,6 +3,7 @@
 #include "duckdb/common/assert.hpp"
 #include "duckdb/common/enums/join_type.hpp"
 #include "duckdb/optimizer/join_order/join_relation.hpp"
+#include "duckdb/optimizer/join_order/mpf_plan_builder.hpp"
 #include "duckdb/planner/expression/bound_conjunction_expression.hpp"
 #include "duckdb/planner/expression/bound_comparison_expression.hpp"
 #include "duckdb/planner/expression_iterator.hpp"
@@ -167,6 +168,30 @@ static unique_ptr<LogicalOperator> ExtractJoinRelation(unique_ptr<SingleJoinRela
 	throw InternalException("Could not find relation in parent node (?)");
 }
 
+//! Puts the join tree where the joins were: either at the root, or below the single-child operators
+static unique_ptr<LogicalOperator> ReplaceJoins(unique_ptr<LogicalOperator> plan, bool root_is_join,
+                                                unique_ptr<LogicalOperator> join_tree) {
+	// find the first join in the relation to know where to place this node
+	if (root_is_join) {
+		// first node is the join, return it immediately
+		return join_tree;
+	}
+	D_ASSERT(plan->children.size() == 1);
+	// have to move up through the relations
+	auto op = plan.get();
+	auto parent = plan.get();
+	while (op->type != LogicalOperatorType::LOGICAL_CROSS_PRODUCT &&
+	       op->type != LogicalOperatorType::LOGICAL_COMPARISON_JOIN &&
+	       op->type != LogicalOperatorType::LOGICAL_ASOF_JOIN) {
+		D_ASSERT(op->children.size() == 1);
+		parent = op;
+		op = op->children[0].get();
+	}
+	// have to replace at this node
+	parent->children[0] = std::move(join_tree);
+	return plan;
+}
+
 unique_ptr<LogicalOperator> QueryGraphManager::Reconstruct(unique_ptr<LogicalOperator> plan) {
 	// now we have to rewrite the plan
 	bool root_is_join = plan->children.size() > 1;
@@ -196,25 +221,33 @@ unique_ptr<LogicalOperator> QueryGraphManager::Reconstruct(unique_ptr<LogicalOpe
 		}
 	}
 
-	// find the first join in the relation to know where to place this node
-	if (root_is_join) {
-		// first node is the join, return it immediately
-		return std::move(join_tree.op);
+	return ReplaceJoins(std::move(plan), root_is_join, std::move(join_tree.op));
+}
+
+unique_ptr<LogicalOperator> QueryGraphManager::ReconstructMPF(unique_ptr<LogicalOperator> plan, Optimizer &optimizer,
+                                                              const MPFQuery &query, const MPFPlanNode &mpf_plan,
+                                                              LogicalAggregate &aggregate) {
+	bool root_is_join = plan->children.size() > 1;
+
+	vector<unique_ptr<LogicalOperator>> extracted_relations;
+	extracted_relations.reserve(relation_manager.NumRelations());
+	for (auto &relation : relation_manager.GetRelations()) {
+		extracted_relations.push_back(ExtractJoinRelation(relation));
 	}
-	D_ASSERT(plan->children.size() == 1);
-	// have to move up through the relations
-	auto op = plan.get();
-	auto parent = plan.get();
-	while (op->type != LogicalOperatorType::LOGICAL_CROSS_PRODUCT &&
-	       op->type != LogicalOperatorType::LOGICAL_COMPARISON_JOIN &&
-	       op->type != LogicalOperatorType::LOGICAL_ASOF_JOIN) {
-		D_ASSERT(op->children.size() == 1);
-		parent = op;
-		op = op->children[0].get();
+
+	// A predicate on one relation stays with it. The others are equi-joins, which
+	// the plan builds from the variables: the columns of a join can have changed.
+	for (auto &filter_info : filters_and_bindings) {
+		auto &set = filter_info->set.get();
+		if (set.count == 1) {
+			auto &relation = extracted_relations[set.relations[0]];
+			relation = PushFilter(std::move(relation), std::move(filter_info->filter));
+		}
+		filter_info->filter.reset();
 	}
-	// have to replace at this node
-	parent->children[0] = std::move(join_tree.op);
-	return plan;
+
+	MPFPlanBuilder builder(optimizer, query, std::move(extracted_relations));
+	return ReplaceJoins(std::move(plan), root_is_join, builder.Build(mpf_plan, aggregate));
 }
 
 static JoinCondition MaybeInvertConditions(unique_ptr<Expression> condition, bool invert) {

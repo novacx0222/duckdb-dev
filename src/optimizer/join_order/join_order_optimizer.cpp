@@ -8,18 +8,19 @@
 #include "duckdb/optimizer/join_order/mpf_plan_enumerator.hpp"
 #include "duckdb/optimizer/join_order/mpf_query.hpp"
 #include "duckdb/optimizer/join_order/plan_enumerator.hpp"
+#include "duckdb/optimizer/optimizer.hpp"
 #include "duckdb/planner/expression/list.hpp"
 #include "duckdb/planner/operator/list.hpp"
 #include "duckdb/main/settings.hpp"
 
 namespace duckdb {
 
-JoinOrderOptimizer::JoinOrderOptimizer(ClientContext &context)
-    : context(context), query_graph_manager(context), depth(1) {
+JoinOrderOptimizer::JoinOrderOptimizer(Optimizer &optimizer)
+    : optimizer(optimizer), context(optimizer.context), query_graph_manager(context), depth(1) {
 }
 
 JoinOrderOptimizer JoinOrderOptimizer::CreateChildOptimizer() {
-	JoinOrderOptimizer child_optimizer(context);
+	JoinOrderOptimizer child_optimizer(optimizer);
 	child_optimizer.materialized_cte_stats = materialized_cte_stats;
 	child_optimizer.delim_scan_stats = delim_scan_stats;
 	child_optimizer.depth = depth + 1;
@@ -42,15 +43,21 @@ unique_ptr<LogicalOperator> JoinOrderOptimizer::Optimize(unique_ptr<LogicalOpera
 	// extract the relations that go into the hyper graph.
 	// We optimize the children of any non-reorderable operations we come across.
 	bool reorderable = query_graph_manager.Build(*this, *op);
+	unique_ptr<MPFQuery> mpf_query;
+	unique_ptr<MPFPlanEnumerator> mpf_enumerator;
+	optional_ptr<const MPFPlanNode> mpf_plan;
 	if (mpf_aggregate && MPFQuery::GetPlanner(context) != MPFPlannerType::OFF) {
-		ReportMPFQuery(reorderable);
+		mpf_plan = ChooseMPFPlan(reorderable, mpf_query, mpf_enumerator);
 	}
 
 	// get relation_stats here since the reconstruction process will move all relations.
 	auto relation_stats = query_graph_manager.relation_manager.GetRelationStats();
 	unique_ptr<LogicalOperator> new_logical_plan = nullptr;
 
-	if (reorderable) {
+	if (mpf_plan) {
+		new_logical_plan =
+		    query_graph_manager.ReconstructMPF(std::move(plan), optimizer, *mpf_query, *mpf_plan, *mpf_aggregate);
+	} else if (reorderable) {
 		// query graph now has filters and relations
 		auto cost_model = CostModel(query_graph_manager);
 
@@ -92,24 +99,30 @@ unique_ptr<LogicalOperator> JoinOrderOptimizer::Optimize(unique_ptr<LogicalOpera
 	return new_logical_plan;
 }
 
-void JoinOrderOptimizer::ReportMPFQuery(bool reorderable) {
+optional_ptr<const MPFPlanNode> JoinOrderOptimizer::ChooseMPFPlan(bool reorderable, unique_ptr<MPFQuery> &query,
+                                                                  unique_ptr<MPFPlanEnumerator> &enumerator) {
 	if (!reorderable) {
 		Printer::Print("[mpf] rejected: no join graph");
-		return;
+		return nullptr;
 	}
 	string reason;
-	auto query = MPFQuery::TryBuild(*mpf_aggregate, query_graph_manager, reason);
+	query = MPFQuery::TryBuild(*mpf_aggregate, query_graph_manager, reason);
 	if (!query) {
 		Printer::Print("[mpf] rejected: " + reason);
-		return;
+		return nullptr;
 	}
 	Printer::Print(query->ToString());
-	MPFPlanEnumerator enumerator(*query, MPFQuery::GetPlanner(context));
-	if (!enumerator.Solve(reason)) {
+	enumerator = make_uniq<MPFPlanEnumerator>(*query, MPFQuery::GetPlanner(context));
+	if (!enumerator->Solve(reason)) {
 		Printer::Print("[mpf] not enumerated: " + reason);
-		return;
+		return nullptr;
 	}
-	Printer::Print(enumerator.ToString(MPFQuery::GetForcedPlan(context)));
+	const auto forced_plan = MPFQuery::GetForcedPlan(context);
+	Printer::Print(enumerator->ToString(forced_plan));
+	if (forced_plan < 0 || idx_t(forced_plan) >= enumerator->Plans().size()) {
+		return nullptr;
+	}
+	return enumerator->Plans()[idx_t(forced_plan)].get();
 }
 
 void JoinOrderOptimizer::AddMaterializedCTEStats(idx_t index, RelationStats &&stats) {

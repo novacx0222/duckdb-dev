@@ -26,7 +26,11 @@
 
 namespace duckdb {
 
+class LogicalAggregate;
+struct MPFQuery;
+class Optimizer;
 class QueryGraphEdges;
+struct MPFPlanNode;
 
 struct GenerateJoinRelation {
 	GenerateJoinRelation(optional_ptr<JoinRelationSet> set, unique_ptr<LogicalOperator> op_p)
@@ -81,6 +85,11 @@ public:
 
 	//! Reconstruct the logical plan using the plan found by the plan enumerator
 	unique_ptr<LogicalOperator> Reconstruct(unique_ptr<LogicalOperator> plan);
+	//! Reconstruct the logical plan using a candidate plan of an MPF query, which also
+	//! rewrites the aggregate of the query above it
+	unique_ptr<LogicalOperator> ReconstructMPF(unique_ptr<LogicalOperator> plan, Optimizer &optimizer,
+	                                           const MPFQuery &query, const MPFPlanNode &mpf_plan,
+	                                           LogicalAggregate &aggregate);
 
 	//! Get a reference to the QueryGraphEdges structure that stores edges between
 	//! nodes and hypernodes.

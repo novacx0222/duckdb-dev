@@ -7,6 +7,7 @@ add_library_unity(
   join_order_optimizer.cpp
   mpf_query.cpp
   mpf_plan_enumerator.cpp
+  mpf_plan_builder.cpp
   cardinality_estimator.cpp
   cost_model.cpp
   plan_enumerator.cpp

@@ -66,9 +66,9 @@ public:
 	}
 
 	struct Column {
-		ColumnBinding binding;
-		idx_t relation_id;
-		string name;
+		MPFColumn column;
+		//! With the relation, for example "r.k"
+		string qualified_name;
 		bool is_group;
 	};
 
@@ -96,7 +96,9 @@ public:
 			return false;
 		}
 		index = sets.Add();
-		columns.push_back({column.binding, relation_id, relation_names[relation_id] + "." + column.GetName(), false});
+		columns.push_back({{column.binding, column.return_type, column.GetName(), relation_id},
+		                   relation_names[relation_id] + "." + column.GetName(),
+		                   false});
 		indexes[column.binding] = index;
 		return true;
 	}
@@ -216,7 +218,7 @@ static bool AddFilters(const vector<unique_ptr<FilterInfo>> &filters, const vect
 			return false;
 		}
 		columns.sets.Union(left, right);
-		components.Union(columns.columns[left].relation_id, columns.columns[right].relation_id);
+		components.Union(columns.columns[left].column.relation_id, columns.columns[right].column.relation_id);
 		reason.clear();
 	}
 	return true;
@@ -238,8 +240,8 @@ static bool BuildVariables(MPFColumns &columns, MPFQuery &query, string &reason)
 		if (!variable.columns.empty()) {
 			variable.name += " = ";
 		}
-		variable.name += column.name;
-		variable.columns.push_back(column.binding);
+		variable.name += column.qualified_name;
+		variable.columns.push_back(column.column);
 		if (column.is_group) {
 			if (variable.is_query_variable) {
 				reason = "GROUP BY of two columns of one variable: " + variable.name;
@@ -247,7 +249,7 @@ static bool BuildVariables(MPFColumns &columns, MPFQuery &query, string &reason)
 			}
 			variable.is_query_variable = true;
 		}
-		auto &relation = query.relations[column.relation_id];
+		auto &relation = query.relations[column.column.relation_id];
 		for (auto &relation_variable : relation.variables) {
 			if (relation_variable == variable_index) {
 				reason = "two columns of one relation in a variable: " + variable.name;
@@ -316,10 +318,21 @@ unique_ptr<MPFQuery> MPFQuery::TryBuild(const LogicalAggregate &aggregate, Query
 			reason = "measure is a variable: " + measure.GetName();
 			return nullptr;
 		}
-		query->relations[relation_id].measures.push_back(measure.binding);
-		query->relations[relation_id].measure_names.push_back(measure.GetName());
+		query->relations[relation_id].measures.push_back(
+		    {measure.binding, measure.return_type, measure.GetName(), relation_id});
 	}
 	return query;
+}
+
+idx_t MPFQuery::FindVariable(const ColumnBinding &binding) const {
+	for (idx_t i = 0; i < variables.size(); i++) {
+		for (auto &column : variables[i].columns) {
+			if (column.binding == binding) {
+				return i;
+			}
+		}
+	}
+	throw InternalException("MPF query: column is not in a variable");
 }
 
 string MPFQuery::ToString() const {
@@ -330,8 +343,12 @@ string MPFQuery::ToString() const {
 		for (auto &variable : relation.variables) {
 			names.push_back("v" + to_string(variable));
 		}
+		vector<string> measure_names;
+		for (auto &measure : relation.measures) {
+			measure_names.push_back(measure.name);
+		}
 		result += "\n[mpf]   " + relation.name + "(" + StringUtil::Join(names, ", ") + ") measures [" +
-		          StringUtil::Join(relation.measure_names, ", ") + "]";
+		          StringUtil::Join(measure_names, ", ") + "]";
 	}
 	for (idx_t i = 0; i < variables.size(); i++) {
 		result += "\n[mpf]   v" + to_string(i) + ": " + variables[i].name;
