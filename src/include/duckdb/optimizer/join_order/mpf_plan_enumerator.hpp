@@ -33,6 +33,8 @@ struct MPFPlanNode {
 	//! A Scan has one column per factor, and a Join has the columns of both sides.
 	//! A Project or an Aggregate computes their product, which is one column.
 	idx_t value_columns;
+	//! The aggregates in this plan that SPALM can replace, together with the join below
+	idx_t matmul_regions;
 	//! The only child of a Project or an Aggregate is `left`
 	optional_ptr<const MPFPlanNode> left;
 	optional_ptr<const MPFPlanNode> right;
@@ -59,7 +61,7 @@ public:
 
 private:
 	const MPFPlanNode &AddNode(MPFPlanNodeType type, mpf_set_t relations, mpf_set_t output_variables,
-	                           idx_t value_columns, optional_ptr<const MPFPlanNode> left,
+	                           idx_t value_columns, idx_t matmul_regions, optional_ptr<const MPFPlanNode> left,
 	                           optional_ptr<const MPFPlanNode> right, string description);
 	const MPFPlanNode &AddScan(idx_t relation_id);
 	const MPFPlanNode &AddJoin(const MPFPlanNode &left, const MPFPlanNode &right);
@@ -70,6 +72,8 @@ private:
 	//! Keeps a node of the relation set, and the aggregate above it if there can be one
 	void Keep(vector<reference<const MPFPlanNode>> &set_plans, const MPFPlanNode &node);
 	bool CanPushDownAggregate(const MPFPlanNode &node) const;
+	//! Whether SPALM can replace an aggregate grouping by `groups` above the node
+	bool IsMatMul(mpf_set_t groups, const MPFPlanNode &node) const;
 	string VariablesToString(mpf_set_t variables) const;
 
 private:
@@ -80,6 +84,10 @@ private:
 	mpf_set_t query_variables = 0;
 	//! The relations that have a factor of the product
 	mpf_set_t measure_relations = 0;
+	//! The variables that SPALM can read as coordinates
+	mpf_set_t integer_variables = 0;
+	//! The relations that SPALM cannot read, see MPFRelation::can_add_null_groups
+	mpf_set_t null_group_relations = 0;
 	//! The variables of each relation
 	vector<mpf_set_t> relation_variables;
 	//! The relation names in descriptions, which are unique unlike the names of a self join

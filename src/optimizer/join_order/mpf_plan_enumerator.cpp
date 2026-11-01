@@ -27,7 +27,8 @@ MPFPlanEnumerator::MPFPlanEnumerator(const MPFQuery &query, MPFPlannerType plann
 }
 
 const MPFPlanNode &MPFPlanEnumerator::AddNode(MPFPlanNodeType type, mpf_set_t relations, mpf_set_t output_variables,
-                                              idx_t value_columns, optional_ptr<const MPFPlanNode> left,
+                                              idx_t value_columns, idx_t matmul_regions,
+                                              optional_ptr<const MPFPlanNode> left,
                                               optional_ptr<const MPFPlanNode> right, string description) {
 	mpf_set_t future_variables = 0;
 	for (idx_t i = 0; i < relation_variables.size(); i++) {
@@ -41,6 +42,7 @@ const MPFPlanNode &MPFPlanEnumerator::AddNode(MPFPlanNodeType type, mpf_set_t re
 	node->output_variables = output_variables;
 	node->required_variables = output_variables & (query_variables | future_variables);
 	node->value_columns = value_columns;
+	node->matmul_regions = matmul_regions;
 	node->left = left;
 	node->right = right;
 	node->description = std::move(description);
@@ -62,7 +64,7 @@ string MPFPlanEnumerator::VariablesToString(mpf_set_t variables) const {
 
 const MPFPlanNode &MPFPlanEnumerator::AddScan(idx_t relation_id) {
 	return AddNode(MPFPlanNodeType::SCAN, MPFSetOf(relation_id), relation_variables[relation_id],
-	               query.relations[relation_id].measures.size(), nullptr, nullptr,
+	               query.relations[relation_id].measures.size(), 0, nullptr, nullptr,
 	               "S(" + relation_labels[relation_id] + ")");
 }
 
@@ -71,28 +73,28 @@ const MPFPlanNode &MPFPlanEnumerator::AddJoin(const MPFPlanNode &left, const MPF
 	const auto &second = left.description < right.description ? right.description : left.description;
 	return AddNode(
 	    MPFPlanNodeType::JOIN, left.relations | right.relations, left.output_variables | right.output_variables,
-	    left.value_columns + right.value_columns, &left, &right,
+	    left.value_columns + right.value_columns, left.matmul_regions + right.matmul_regions, &left, &right,
 	    "J" + VariablesToString(left.output_variables & right.output_variables) + "(" + first + " " + second + ")");
 }
 
 const MPFPlanNode &MPFPlanEnumerator::AddProject(const MPFPlanNode &child) {
 	// No rows are merged, so the other variables can go
-	return AddNode(MPFPlanNodeType::PROJECT, child.relations, child.required_variables, 1, &child, nullptr,
-	               "P" + VariablesToString(child.required_variables) + "(" + child.description + ")");
+	return AddNode(MPFPlanNodeType::PROJECT, child.relations, child.required_variables, 1, child.matmul_regions, &child,
+	               nullptr, "P" + VariablesToString(child.required_variables) + "(" + child.description + ")");
 }
 
 const MPFPlanNode &MPFPlanEnumerator::ProjectValues(const MPFPlanNode &side) {
 	return side.value_columns == 1 ? side : AddProject(side);
 }
 
-//! Whether an aggregate grouping by `groups` above the node has the shape of a
-//! MatMul: C(row, column) = SUM(A(row, k) * B(k, column)). A coordinate may
+//! A MatMul is C(row, column) = SUM(A(row, k) * B(k, column)). A coordinate may
 //! repeat, since SPALM can sum the entries in the CSR (SET spalm_duplicates).
-static bool IsMatMul(mpf_set_t groups, const MPFPlanNode &node) {
-	if (node.type != MPFPlanNodeType::JOIN) {
+bool MPFPlanEnumerator::IsMatMul(mpf_set_t groups, const MPFPlanNode &node) const {
+	if (node.type != MPFPlanNodeType::JOIN || (node.relations & null_group_relations)) {
 		return false;
 	}
-	if (MPFSetSize(node.left->output_variables & node.right->output_variables) != 1) {
+	const auto join_variables = node.left->output_variables & node.right->output_variables;
+	if (MPFSetSize(join_variables) != 1 || ((groups | join_variables) & ~integer_variables)) {
 		return false;
 	}
 	// A join variable is in both sides, so with one group per side it is summed out
@@ -104,14 +106,16 @@ const MPFPlanNode &MPFPlanEnumerator::AddAggregate(const MPFPlanNode &child) {
 	// The groups are all the variables that are still needed, so the aggregate
 	// removes the others
 	reference<const MPFPlanNode> input = child;
-	if (IsMatMul(child.required_variables, child)) {
+	const auto is_matmul = IsMatMul(child.required_variables, child);
+	if (is_matmul) {
 		auto &left = ProjectValues(*child.left);
 		auto &right = ProjectValues(*child.right);
 		if (&left != child.left.get() || &right != child.right.get()) {
 			input = AddJoin(left, right);
 		}
 	}
-	return AddNode(MPFPlanNodeType::AGGREGATE, child.relations, child.required_variables, 1, input.get(), nullptr,
+	return AddNode(MPFPlanNodeType::AGGREGATE, child.relations, child.required_variables, 1,
+	               input.get().matmul_regions + (is_matmul ? 1 : 0), input.get(), nullptr,
 	               "A" + VariablesToString(child.required_variables) + "(" + input.get().description + ")");
 }
 
@@ -149,8 +153,13 @@ bool MPFPlanEnumerator::Solve(string &reason) {
 
 	all_relations = MPFSetOf(relation_count) - 1;
 	for (idx_t i = 0; i < query.variables.size(); i++) {
-		if (query.variables[i].is_query_variable) {
+		auto &variable = query.variables[i];
+		if (variable.is_query_variable) {
 			query_variables |= MPFSetOf(i);
+		}
+		// The columns of an equi-join have the same type, or there would be a cast
+		if (variable.columns[0].type == LogicalType::INTEGER) {
+			integer_variables |= MPFSetOf(i);
 		}
 	}
 	for (idx_t i = 0; i < relation_count; i++) {
@@ -162,6 +171,9 @@ bool MPFPlanEnumerator::Solve(string &reason) {
 		relation_variables.push_back(variables);
 		if (!relation.measures.empty()) {
 			measure_relations |= MPFSetOf(i);
+		}
+		if (relation.can_add_null_groups) {
+			null_group_relations |= MPFSetOf(i);
 		}
 		auto label = relation.name;
 		for (idx_t other = 0; other < relation_count; other++) {
@@ -223,7 +235,9 @@ string MPFPlanEnumerator::ToString(int64_t forced_plan) const {
 	}
 	for (idx_t i = 0; i < plan_count; i++) {
 		if (forced_plan < 0 || idx_t(forced_plan) == i) {
-			result += "\n[mpf] plan " + to_string(i) + ": " + plans[i].get().description;
+			auto &plan = plans[i].get();
+			result += "\n[mpf] plan " + to_string(i) + " (" + to_string(plan.matmul_regions) +
+			          " matmuls): " + plan.description;
 		}
 	}
 	return result;
