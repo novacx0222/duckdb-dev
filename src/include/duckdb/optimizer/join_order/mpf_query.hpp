@@ -19,6 +19,9 @@ class ClientContext;
 class LogicalAggregate;
 class QueryGraphManager;
 
+//! SET mpf_planner, which the SPALM extension registers
+enum class MPFPlannerType : uint8_t { OFF, CS, CS_PLUS };
+
 //! A variable of a marginalize-a-product-function query: the columns that an
 //! inner equi-join makes equal, or one column in the GROUP BY.
 struct MPFVariable {
@@ -46,8 +49,9 @@ struct MPFQuery {
 	vector<MPFRelation> relations;
 	vector<MPFVariable> variables;
 
-	//! Whether SET mpf_planner, which the SPALM extension registers, enables MPF planning
-	static bool IsEnabled(ClientContext &context);
+	static MPFPlannerType GetPlanner(ClientContext &context);
+	//! SET mpf_force_plan, which the SPALM extension registers, or -1 for no plan
+	static int64_t GetForcedPlan(ClientContext &context);
 	//! Reads the query from the aggregate above the join graph, which Build has
 	//! extracted. Returns nullptr and sets `reason` unless the query is an MPF.
 	static unique_ptr<MPFQuery> TryBuild(const LogicalAggregate &aggregate, QueryGraphManager &query_graph_manager,

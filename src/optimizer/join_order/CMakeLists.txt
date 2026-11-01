@@ -6,6 +6,7 @@ add_library_unity(
   join_node.cpp
   join_order_optimizer.cpp
   mpf_query.cpp
+  mpf_plan_enumerator.cpp
   cardinality_estimator.cpp
   cost_model.cpp
   plan_enumerator.cpp

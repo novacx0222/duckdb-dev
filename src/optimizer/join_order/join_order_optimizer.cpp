@@ -5,6 +5,7 @@
 #include "duckdb/common/pair.hpp"
 #include "duckdb/common/printer.hpp"
 #include "duckdb/optimizer/join_order/cost_model.hpp"
+#include "duckdb/optimizer/join_order/mpf_plan_enumerator.hpp"
 #include "duckdb/optimizer/join_order/mpf_query.hpp"
 #include "duckdb/optimizer/join_order/plan_enumerator.hpp"
 #include "duckdb/planner/expression/list.hpp"
@@ -41,7 +42,7 @@ unique_ptr<LogicalOperator> JoinOrderOptimizer::Optimize(unique_ptr<LogicalOpera
 	// extract the relations that go into the hyper graph.
 	// We optimize the children of any non-reorderable operations we come across.
 	bool reorderable = query_graph_manager.Build(*this, *op);
-	if (mpf_aggregate && MPFQuery::IsEnabled(context)) {
+	if (mpf_aggregate && MPFQuery::GetPlanner(context) != MPFPlannerType::OFF) {
 		ReportMPFQuery(reorderable);
 	}
 
@@ -98,7 +99,17 @@ void JoinOrderOptimizer::ReportMPFQuery(bool reorderable) {
 	}
 	string reason;
 	auto query = MPFQuery::TryBuild(*mpf_aggregate, query_graph_manager, reason);
-	Printer::Print(query ? query->ToString() : "[mpf] rejected: " + reason);
+	if (!query) {
+		Printer::Print("[mpf] rejected: " + reason);
+		return;
+	}
+	Printer::Print(query->ToString());
+	MPFPlanEnumerator enumerator(*query, MPFQuery::GetPlanner(context));
+	if (!enumerator.Solve(reason)) {
+		Printer::Print("[mpf] not enumerated: " + reason);
+		return;
+	}
+	Printer::Print(enumerator.ToString(MPFQuery::GetForcedPlan(context)));
 }
 
 void JoinOrderOptimizer::AddMaterializedCTEStats(idx_t index, RelationStats &&stats) {

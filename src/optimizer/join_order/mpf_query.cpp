@@ -14,12 +14,24 @@
 
 namespace duckdb {
 
-bool MPFQuery::IsEnabled(ClientContext &context) {
+MPFPlannerType MPFQuery::GetPlanner(ClientContext &context) {
 	Value planner;
 	if (!context.TryGetCurrentSetting("mpf_planner", planner) || planner.IsNull()) {
-		return false;
+		return MPFPlannerType::OFF;
 	}
-	return StringUtil::Lower(planner.ToString()) != "off";
+	const auto name = StringUtil::Lower(planner.ToString());
+	if (name == "cs") {
+		return MPFPlannerType::CS;
+	}
+	return name == "cs_plus" ? MPFPlannerType::CS_PLUS : MPFPlannerType::OFF;
+}
+
+int64_t MPFQuery::GetForcedPlan(ClientContext &context) {
+	Value plan;
+	if (!context.TryGetCurrentSetting("mpf_force_plan", plan) || plan.IsNull()) {
+		return -1;
+	}
+	return plan.GetValue<int64_t>();
 }
 
 //! Disjoint sets over consecutive indexes

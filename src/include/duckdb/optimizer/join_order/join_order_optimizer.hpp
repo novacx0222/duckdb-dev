@@ -70,7 +70,7 @@ public:
 	optional_ptr<const LogicalAggregate> mpf_aggregate;
 
 private:
-	//! Reports whether the plan below `mpf_aggregate` is an MPF query
+	//! Reports whether the plan below `mpf_aggregate` is an MPF query, and its candidate plans
 	void ReportMPFQuery(bool reorderable);
 };
 
