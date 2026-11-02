@@ -155,19 +155,50 @@ const MPFPlanNode &MPFPlanEnumerator::ProjectValues(const MPFPlanNode &side) {
 	return side.value_columns == 1 ? side : AddProject(MPFPlanNodeType::PROJECT, "P", side);
 }
 
+bool MPFPlanEnumerator::AreCoordinates(mpf_set_t variables, mpf_set_t relations) const {
+	for (idx_t i = 0; i < query.variables.size(); i++) {
+		if (!(variables & MPFSetOf(i))) {
+			continue;
+		}
+		// Columns of a variable in these relations are joined there, so they have no NULL
+		// any more, and they are equal: what one column is known to have counts for all
+		idx_t columns = 0;
+		bool has_no_null = false;
+		bool is_non_negative = false;
+		for (auto &column : query.variables[i].columns) {
+			if (relations & MPFSetOf(column.relation_id)) {
+				columns++;
+				has_no_null = has_no_null || column.facts.has_no_null;
+				is_non_negative = is_non_negative || column.facts.is_non_negative;
+			}
+		}
+		if (!is_non_negative || (!has_no_null && columns < 2)) {
+			return false;
+		}
+	}
+	return true;
+}
+
 //! A MatMul is C(row, column) = SUM(A(row, k) * B(k, column)). A coordinate may
 //! repeat, since SPALM can sum the entries in the CSR (SET spalm_duplicates).
 bool MPFPlanEnumerator::IsMatMul(mpf_set_t groups, const MPFPlanNode &node) const {
-	if (node.type != MPFPlanNodeType::JOIN || (node.relations & null_group_relations)) {
+	if (node.type != MPFPlanNodeType::JOIN || (node.relations & (null_group_relations | unsafe_value_relations))) {
 		return false;
 	}
-	const auto join_variables = node.left->output_variables & node.right->output_variables;
+	auto &left = *node.left;
+	auto &right = *node.right;
+	const auto join_variables = left.output_variables & right.output_variables;
 	if (MPFSetSize(join_variables) != 1 || ((groups | join_variables) & ~integer_variables)) {
 		return false;
 	}
 	// A join variable is in both sides, so with one group per side it is summed out
-	return MPFSetSize(groups) == 2 && MPFSetSize(groups & node.left->output_variables) == 1 &&
-	       MPFSetSize(groups & node.right->output_variables) == 1;
+	const auto left_groups = groups & left.output_variables;
+	const auto right_groups = groups & right.output_variables;
+	if (MPFSetSize(groups) != 2 || MPFSetSize(left_groups) != 1 || MPFSetSize(right_groups) != 1) {
+		return false;
+	}
+	return AreCoordinates(left_groups | join_variables, left.relations) &&
+	       AreCoordinates(right_groups | join_variables, right.relations);
 }
 
 const MPFPlanNode &MPFPlanEnumerator::AddAggregate(const MPFPlanNode &child) {
@@ -257,6 +288,11 @@ bool MPFPlanEnumerator::Solve(string &reason) {
 		}
 		if (relation.can_add_null_groups) {
 			null_group_relations |= MPFSetOf(i);
+		}
+		for (auto &measure : relation.measures) {
+			if (!measure.facts.IsValue()) {
+				unsafe_value_relations |= MPFSetOf(i);
+			}
 		}
 		auto label = relation.name;
 		for (idx_t other = 0; other < relation_count; other++) {

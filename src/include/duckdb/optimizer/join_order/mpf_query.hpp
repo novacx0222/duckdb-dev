@@ -12,6 +12,7 @@
 #include "duckdb/common/types.hpp"
 #include "duckdb/common/unique_ptr.hpp"
 #include "duckdb/common/vector.hpp"
+#include "duckdb/optimizer/join_order/mpf_column_facts.hpp"
 #include "duckdb/planner/column_binding.hpp"
 
 namespace duckdb {
@@ -31,6 +32,8 @@ struct MPFColumn {
 	string name;
 	//! The index in the RelationManager
 	idx_t relation_id;
+	//! What statistics guarantee about the column
+	MPFColumnFacts facts;
 };
 
 //! A variable of a marginalize-a-product-function query: the columns that an

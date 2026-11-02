@@ -83,6 +83,8 @@ private:
 	bool CanPushDownAggregate(const MPFPlanNode &node) const;
 	//! Whether SPALM can replace an aggregate grouping by `groups` above the node
 	bool IsMatMul(mpf_set_t groups, const MPFPlanNode &node) const;
+	//! Whether all these variables have a safe coordinate in the relations
+	bool AreCoordinates(mpf_set_t variables, mpf_set_t relations) const;
 	string VariablesToString(mpf_set_t variables) const;
 
 private:
@@ -95,6 +97,8 @@ private:
 	mpf_set_t measure_relations = 0;
 	//! The variables that SPALM can read as coordinates
 	mpf_set_t integer_variables = 0;
+	//! The relations with a measure that SPALM must not read, see MPFColumnFacts::IsValue
+	mpf_set_t unsafe_value_relations = 0;
 	//! The relations that SPALM cannot read, see MPFRelation::can_add_null_groups
 	mpf_set_t null_group_relations = 0;
 	//! The variables of each relation

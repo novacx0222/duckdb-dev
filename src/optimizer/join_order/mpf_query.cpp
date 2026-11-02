@@ -310,9 +310,7 @@ static optional_ptr<const LogicalGet> FindBaseTable(const LogicalOperator &relat
 
 //! The name of a column in its table, which an alias in the query does not change
 static string ColumnNameInTable(const LogicalGet &get, const MPFColumn &column) {
-	const auto index =
-	    get.projection_ids.empty() ? column.binding.column_index : get.projection_ids[column.binding.column_index];
-	return StringUtil::Lower(get.GetColumnName(get.GetColumnIds()[index]));
+	return StringUtil::Lower(get.GetColumnName(get.GetColumnIds()[column.binding.column_index]));
 }
 
 //! Turns the hints on the table of a relation into keys over variables of the query
@@ -411,10 +409,22 @@ unique_ptr<MPFQuery> MPFQuery::TryBuild(const LogicalAggregate &aggregate, Query
 		    {measure.binding, measure.return_type, measure.GetName(), relation_id});
 	}
 
+	auto &context = query_graph_manager.context;
+	for (auto &variable : query->variables) {
+		for (auto &column : variable.columns) {
+			column.facts = MPFColumnFacts::Of(context, relations[column.relation_id]->op, column.binding);
+		}
+	}
+	for (auto &relation : query->relations) {
+		for (auto &measure : relation.measures) {
+			measure.facts = MPFColumnFacts::Of(context, relations[measure.relation_id]->op, measure.binding);
+		}
+	}
+
 	query->has_hints = !hints.keys.empty();
 	if (query->has_hints) {
 		for (idx_t i = 0; i < relations.size(); i++) {
-			AddUniqueKeys(query_graph_manager.context, hints, relations[i]->op, i, *query);
+			AddUniqueKeys(context, hints, relations[i]->op, i, *query);
 		}
 	}
 	return query;
