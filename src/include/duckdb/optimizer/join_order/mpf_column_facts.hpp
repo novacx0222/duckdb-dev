@@ -23,7 +23,6 @@ class LogicalOperator;
 struct MPFColumnFacts {
 	bool has_no_null = false;
 	bool is_non_negative = false;
-	bool is_positive = false;
 
 	//! The facts of a column in the output of `plan`. If `plan` is a join, these are the
 	//! facts of its input, before the join.
@@ -33,11 +32,10 @@ struct MPFColumnFacts {
 	bool IsCoordinate() const {
 		return has_no_null && is_non_negative;
 	}
-	//! SPALM has a dense result, so it leaves out a sum of zero, and it skips a NULL value.
-	//! With positive values, each pair that matches gives a sum above zero, and the
-	//! result has the rows of DuckDB. (A product that underflows is still not covered.)
+	//! SPALM skips a NULL value, and has no row for a group of them. Any other value is
+	//! fine, whatever its sign: SPALM finds out at run time which pairs matched.
 	bool IsValue() const {
-		return has_no_null && is_positive;
+		return has_no_null;
 	}
 };
 

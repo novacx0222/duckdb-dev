@@ -51,7 +51,6 @@ static MPFColumnFacts FactsOfBaseColumn(ClientContext &context, const LogicalGet
 	if (statistics->GetStatsType() == StatisticsType::NUMERIC_STATS && NumericStats::HasMin(*statistics)) {
 		const auto minimum = NumericStats::Min(*statistics).DefaultCastAs(LogicalType::DOUBLE).GetValue<double>();
 		facts.is_non_negative = minimum >= 0;
-		facts.is_positive = minimum > 0;
 	}
 	return facts;
 }
@@ -67,7 +66,6 @@ static MPFColumnFacts FactsOfExpression(ClientContext &context, const LogicalOpe
 			const auto number = value.DefaultCastAs(LogicalType::DOUBLE).GetValue<double>();
 			facts.has_no_null = true;
 			facts.is_non_negative = number >= 0;
-			facts.is_positive = number > 0;
 		}
 		return facts;
 	}
@@ -80,12 +78,11 @@ static MPFColumnFacts FactsOfExpression(ClientContext &context, const LogicalOpe
 		const auto left = FactsOfExpression(context, input, *function.children[0]);
 		const auto right = FactsOfExpression(context, input, *function.children[1]);
 		facts.has_no_null = left.has_no_null && right.has_no_null;
-		facts.is_positive = left.is_positive && right.is_positive;
-		facts.is_non_negative = facts.is_positive;
+		facts.is_non_negative = left.is_non_negative && right.is_non_negative;
 		return facts;
 	}
 	case ExpressionClass::BOUND_AGGREGATE: {
-		// A group has at least one row, so a sum of positive numbers is positive
+		// A group has at least one row, so a sum of numbers that are not NULL is not NULL
 		auto &aggregate = expr.Cast<BoundAggregateExpression>();
 		if (aggregate.function.name != "sum" || aggregate.children.size() != 1 || aggregate.filter) {
 			return facts;
@@ -131,7 +128,6 @@ static MPFColumnFacts FactsOfJoinColumn(ClientContext &context, const LogicalCom
 		const auto partner = FactsOfChildColumn(context, join, left == column ? right : left);
 		facts.has_no_null = true;
 		facts.is_non_negative = facts.is_non_negative || partner.is_non_negative;
-		facts.is_positive = facts.is_positive || partner.is_positive;
 	}
 	return facts;
 }
