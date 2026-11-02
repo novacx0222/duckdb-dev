@@ -4,7 +4,9 @@
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/common/unordered_map.hpp"
 #include "duckdb/main/client_context.hpp"
+#include "duckdb/optimizer/join_order/mpf_hints.hpp"
 #include "duckdb/optimizer/join_order/query_graph_manager.hpp"
+#include "duckdb/planner/operator/logical_get.hpp"
 #include "duckdb/planner/operator/logical_join.hpp"
 #include "duckdb/planner/column_binding_map.hpp"
 #include "duckdb/planner/expression/bound_aggregate_expression.hpp"
@@ -130,8 +132,8 @@ static bool ExtractFactors(const Expression &expression, vector<reference<const 
 }
 
 //! The only aggregate must be a plain SUM over DOUBLE factors
-static bool CheckAggregate(const LogicalAggregate &aggregate, vector<reference<const BoundColumnRefExpression>> &factors,
-                           string &reason) {
+static bool CheckAggregate(const LogicalAggregate &aggregate,
+                           vector<reference<const BoundColumnRefExpression>> &factors, string &reason) {
 	if (aggregate.grouping_sets.size() > 1 || !aggregate.grouping_functions.empty()) {
 		reason = "grouping sets";
 		return false;
@@ -294,8 +296,61 @@ static bool BuildVariables(MPFColumns &columns, MPFQuery &query, string &reason)
 	return true;
 }
 
+//! The scan of a relation that is a base table, possibly below filters
+static optional_ptr<const LogicalGet> FindBaseTable(const LogicalOperator &relation) {
+	reference<const LogicalOperator> op = relation;
+	while (op.get().type == LogicalOperatorType::LOGICAL_FILTER) {
+		op = *op.get().children[0];
+	}
+	if (op.get().type != LogicalOperatorType::LOGICAL_GET) {
+		return nullptr;
+	}
+	return op.get().Cast<LogicalGet>();
+}
+
+//! The name of a column in its table, which an alias in the query does not change
+static string ColumnNameInTable(const LogicalGet &get, const MPFColumn &column) {
+	const auto index =
+	    get.projection_ids.empty() ? column.binding.column_index : get.projection_ids[column.binding.column_index];
+	return StringUtil::Lower(get.GetColumnName(get.GetColumnIds()[index]));
+}
+
+//! Turns the hints on the table of a relation into keys over variables of the query
+static void AddUniqueKeys(ClientContext &context, const MPFHints &hints, const LogicalOperator &relation_op,
+                          idx_t relation_id, MPFQuery &query) {
+	auto get = FindBaseTable(relation_op);
+	auto table = get ? get->GetTable() : nullptr;
+	if (!table) {
+		return;
+	}
+	unordered_map<string, idx_t> variable_of_column;
+	auto &relation = query.relations[relation_id];
+	for (auto &variable : relation.variables) {
+		for (auto &column : query.variables[variable].columns) {
+			if (column.relation_id == relation_id) {
+				variable_of_column[ColumnNameInTable(*get, column)] = variable;
+			}
+		}
+	}
+	for (auto &key : hints.keys) {
+		if (&MPFHints::GetTable(context, key) != table.get()) {
+			continue;
+		}
+		vector<idx_t> variables;
+		for (auto &column : key.columns) {
+			auto entry = variable_of_column.find(column);
+			if (entry != variable_of_column.end()) {
+				variables.push_back(entry->second);
+			}
+		}
+		if (variables.size() == key.columns.size()) {
+			relation.unique_keys.push_back(std::move(variables));
+		}
+	}
+}
+
 unique_ptr<MPFQuery> MPFQuery::TryBuild(const LogicalAggregate &aggregate, QueryGraphManager &query_graph_manager,
-                                        string &reason) {
+                                        const MPFHints &hints, string &reason) {
 	vector<reference<const BoundColumnRefExpression>> factors;
 	if (!CheckAggregate(aggregate, factors, reason)) {
 		return nullptr;
@@ -355,6 +410,13 @@ unique_ptr<MPFQuery> MPFQuery::TryBuild(const LogicalAggregate &aggregate, Query
 		query->relations[relation_id].measures.push_back(
 		    {measure.binding, measure.return_type, measure.GetName(), relation_id});
 	}
+
+	query->has_hints = !hints.keys.empty();
+	if (query->has_hints) {
+		for (idx_t i = 0; i < relations.size(); i++) {
+			AddUniqueKeys(query_graph_manager.context, hints, relations[i]->op, i, *query);
+		}
+	}
 	return query;
 }
 
@@ -370,8 +432,8 @@ idx_t MPFQuery::FindVariable(const ColumnBinding &binding) const {
 }
 
 string MPFQuery::ToString() const {
-	string result = "[mpf] accepted: " + to_string(relations.size()) + " relations, " + to_string(variables.size()) +
-	                " variables";
+	string result =
+	    "[mpf] accepted: " + to_string(relations.size()) + " relations, " + to_string(variables.size()) + " variables";
 	for (auto &relation : relations) {
 		vector<string> names;
 		for (auto &variable : relation.variables) {
@@ -383,6 +445,17 @@ string MPFQuery::ToString() const {
 		}
 		result += "\n[mpf]   " + relation.name + "(" + StringUtil::Join(names, ", ") + ") measures [" +
 		          StringUtil::Join(measure_names, ", ") + "]";
+		if (has_hints) {
+			vector<string> keys;
+			for (auto &key : relation.unique_keys) {
+				vector<string> key_names;
+				for (auto &variable : key) {
+					key_names.push_back("v" + to_string(variable));
+				}
+				keys.push_back("(" + StringUtil::Join(key_names, ", ") + ")");
+			}
+			result += " keys [" + StringUtil::Join(keys, ", ") + "]";
+		}
 	}
 	for (idx_t i = 0; i < variables.size(); i++) {
 		result += "\n[mpf]   v" + to_string(i) + ": " + variables[i].name;

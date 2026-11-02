@@ -5,6 +5,7 @@ add_library_unity(
   join_relation_set.cpp
   join_node.cpp
   join_order_optimizer.cpp
+  mpf_hints.cpp
   mpf_query.cpp
   mpf_plan_enumerator.cpp
   mpf_plan_builder.cpp

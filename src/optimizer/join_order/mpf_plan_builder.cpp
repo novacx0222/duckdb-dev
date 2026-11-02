@@ -138,6 +138,7 @@ MPFPlanBuilder::Output MPFPlanBuilder::BuildNode(const MPFPlanNode &node) {
 	case MPFPlanNodeType::JOIN:
 		return BuildJoin(node);
 	case MPFPlanNodeType::PROJECT:
+	case MPFPlanNodeType::OMITTED_AGGREGATE:
 		return BuildProject(node);
 	case MPFPlanNodeType::AGGREGATE:
 		return BuildAggregate(node);

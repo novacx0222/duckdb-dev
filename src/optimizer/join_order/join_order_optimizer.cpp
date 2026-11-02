@@ -5,6 +5,7 @@
 #include "duckdb/common/pair.hpp"
 #include "duckdb/common/printer.hpp"
 #include "duckdb/optimizer/join_order/cost_model.hpp"
+#include "duckdb/optimizer/join_order/mpf_hints.hpp"
 #include "duckdb/optimizer/join_order/mpf_plan_enumerator.hpp"
 #include "duckdb/optimizer/join_order/mpf_query.hpp"
 #include "duckdb/optimizer/join_order/plan_enumerator.hpp"
@@ -101,12 +102,14 @@ unique_ptr<LogicalOperator> JoinOrderOptimizer::Optimize(unique_ptr<LogicalOpera
 
 optional_ptr<const MPFPlanNode> JoinOrderOptimizer::ChooseMPFPlan(bool reorderable, unique_ptr<MPFQuery> &query,
                                                                   unique_ptr<MPFPlanEnumerator> &enumerator) {
+	// Before anything else: a table of a hint can be gone since SET mpf_hints
+	const auto hints = MPFHints::Get(context);
 	if (!reorderable) {
 		Printer::Print("[mpf] rejected: no join graph");
 		return nullptr;
 	}
 	string reason;
-	query = MPFQuery::TryBuild(*mpf_aggregate, query_graph_manager, reason);
+	query = MPFQuery::TryBuild(*mpf_aggregate, query_graph_manager, hints, reason);
 	if (!query) {
 		Printer::Print("[mpf] rejected: " + reason);
 		return nullptr;

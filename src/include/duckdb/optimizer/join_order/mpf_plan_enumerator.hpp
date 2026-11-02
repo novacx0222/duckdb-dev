@@ -16,10 +16,11 @@
 
 namespace duckdb {
 
-//! A set of relations or variables: bit i is the index i in MPFQuery
+//! A set of relations or variables: bit i is the index i in MPFQuery. Variables can
+//! also have row numbers, in the bits after the ones of the query, see Solve.
 using mpf_set_t = uint64_t;
 
-enum class MPFPlanNodeType : uint8_t { SCAN, JOIN, PROJECT, AGGREGATE };
+enum class MPFPlanNodeType : uint8_t { SCAN, JOIN, PROJECT, OMITTED_AGGREGATE, AGGREGATE };
 
 //! A node of a candidate plan. There can be many candidates and only one runs,
 //! so these are plain descriptions, not LogicalOperators.
@@ -31,14 +32,18 @@ struct MPFPlanNode {
 	//! them, or a relation that is not joined yet has them
 	mpf_set_t required_variables;
 	//! A Scan has one column per factor, and a Join has the columns of both sides.
-	//! A Project or an Aggregate computes their product, which is one column.
+	//! A Project or an (omitted) Aggregate computes their product, which is one column.
 	idx_t value_columns;
 	//! The aggregates in this plan that SPALM can replace, together with the join below
 	idx_t matmul_regions;
-	//! The only child of a Project or an Aggregate is `left`
+	//! The sets of variables that the rows of this node differ on, which hints start.
+	//! An aggregate makes its groups a key, with or without hints.
+	vector<mpf_set_t> unique_keys;
+	//! The only child of a Project or an (omitted) Aggregate is `left`
 	optional_ptr<const MPFPlanNode> left;
 	optional_ptr<const MPFPlanNode> right;
-	//! Identifies the plan: S(r), J[v0](x y), P[v0,v1](x) and A[v0,v1](x)
+	//! Identifies the plan: S(r), J[v0](x y), P[v0,v1](x), A[v0,v1](x) and O[v0,v1](x).
+	//! O is an aggregate with one row per group, so only its product is computed.
 	string description;
 };
 
@@ -62,11 +67,15 @@ public:
 private:
 	const MPFPlanNode &AddNode(MPFPlanNodeType type, mpf_set_t relations, mpf_set_t output_variables,
 	                           idx_t value_columns, idx_t matmul_regions, optional_ptr<const MPFPlanNode> left,
-	                           optional_ptr<const MPFPlanNode> right, string description);
+	                           optional_ptr<const MPFPlanNode> right, string description,
+	                           vector<mpf_set_t> unique_keys);
 	const MPFPlanNode &AddScan(idx_t relation_id);
 	const MPFPlanNode &AddJoin(const MPFPlanNode &left, const MPFPlanNode &right);
-	const MPFPlanNode &AddProject(const MPFPlanNode &child);
+	const MPFPlanNode &AddProject(MPFPlanNodeType type, const string &name, const MPFPlanNode &child);
 	const MPFPlanNode &AddAggregate(const MPFPlanNode &child);
+	//! Adds the aggregate above `child`; if it is not the root of a plan, and the rows
+	//! of the child differ on the groups, only its product remains
+	const MPFPlanNode &AddAggregateOrOmit(const MPFPlanNode &child);
 	//! A side of a MatMul must have one value column
 	const MPFPlanNode &ProjectValues(const MPFPlanNode &side);
 	//! Keeps a node of the relation set, and the aggregate above it if there can be one

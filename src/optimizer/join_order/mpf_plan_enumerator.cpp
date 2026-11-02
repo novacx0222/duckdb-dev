@@ -29,7 +29,8 @@ MPFPlanEnumerator::MPFPlanEnumerator(const MPFQuery &query, MPFPlannerType plann
 const MPFPlanNode &MPFPlanEnumerator::AddNode(MPFPlanNodeType type, mpf_set_t relations, mpf_set_t output_variables,
                                               idx_t value_columns, idx_t matmul_regions,
                                               optional_ptr<const MPFPlanNode> left,
-                                              optional_ptr<const MPFPlanNode> right, string description) {
+                                              optional_ptr<const MPFPlanNode> right, string description,
+                                              vector<mpf_set_t> unique_keys) {
 	mpf_set_t future_variables = 0;
 	for (idx_t i = 0; i < relation_variables.size(); i++) {
 		if (!(relations & MPFSetOf(i))) {
@@ -43,6 +44,7 @@ const MPFPlanNode &MPFPlanEnumerator::AddNode(MPFPlanNodeType type, mpf_set_t re
 	node->required_variables = output_variables & (query_variables | future_variables);
 	node->value_columns = value_columns;
 	node->matmul_regions = matmul_regions;
+	node->unique_keys = std::move(unique_keys);
 	node->left = left;
 	node->right = right;
 	node->description = std::move(description);
@@ -62,29 +64,95 @@ string MPFPlanEnumerator::VariablesToString(mpf_set_t variables) const {
 	return "[" + StringUtil::Join(names, ",") + "]";
 }
 
+//! Whether the rows of the node differ on these variables
+static bool HasUniqueKeyIn(const MPFPlanNode &node, mpf_set_t variables) {
+	for (auto &key : node.unique_keys) {
+		if (!(key & ~variables)) {
+			return true;
+		}
+	}
+	return false;
+}
+
+//! A superset of a key is a key too, so it says nothing
+static vector<mpf_set_t> KeepMinimalKeys(const vector<mpf_set_t> &keys) {
+	vector<mpf_set_t> result;
+	for (auto &key : keys) {
+		bool is_minimal = true;
+		for (auto &other : keys) {
+			if (other != key && !(other & ~key)) {
+				is_minimal = false;
+			}
+		}
+		if (is_minimal && std::find(result.begin(), result.end(), key) == result.end()) {
+			result.push_back(key);
+		}
+	}
+	return result;
+}
+
 const MPFPlanNode &MPFPlanEnumerator::AddScan(idx_t relation_id) {
+	vector<mpf_set_t> unique_keys;
+	if (query.has_hints) {
+		for (auto &key : query.relations[relation_id].unique_keys) {
+			mpf_set_t key_variables = 0;
+			for (auto &variable : key) {
+				key_variables |= MPFSetOf(variable);
+			}
+			unique_keys.push_back(key_variables);
+		}
+		if (unique_keys.empty()) {
+			// All variables with the row numbers
+			unique_keys.push_back(relation_variables[relation_id]);
+		}
+	}
 	return AddNode(MPFPlanNodeType::SCAN, MPFSetOf(relation_id), relation_variables[relation_id],
 	               query.relations[relation_id].measures.size(), 0, nullptr, nullptr,
-	               "S(" + relation_labels[relation_id] + ")");
+	               "S(" + relation_labels[relation_id] + ")", KeepMinimalKeys(unique_keys));
 }
 
 const MPFPlanNode &MPFPlanEnumerator::AddJoin(const MPFPlanNode &left, const MPFPlanNode &right) {
 	const auto &first = left.description < right.description ? left.description : right.description;
 	const auto &second = left.description < right.description ? right.description : left.description;
+
+	// A row of the join is a pair of rows, so two keys together are a key. If the
+	// join variables have a key of one side, a row of the other side matches at most
+	// once, so the keys of that side stay keys.
+	const auto join_variables = left.output_variables & right.output_variables;
+	vector<mpf_set_t> unique_keys;
+	for (auto &left_key : left.unique_keys) {
+		for (auto &right_key : right.unique_keys) {
+			unique_keys.push_back(left_key | right_key);
+		}
+	}
+	if (HasUniqueKeyIn(right, join_variables)) {
+		unique_keys.insert(unique_keys.end(), left.unique_keys.begin(), left.unique_keys.end());
+	}
+	if (HasUniqueKeyIn(left, join_variables)) {
+		unique_keys.insert(unique_keys.end(), right.unique_keys.begin(), right.unique_keys.end());
+	}
+
 	return AddNode(
 	    MPFPlanNodeType::JOIN, left.relations | right.relations, left.output_variables | right.output_variables,
 	    left.value_columns + right.value_columns, left.matmul_regions + right.matmul_regions, &left, &right,
-	    "J" + VariablesToString(left.output_variables & right.output_variables) + "(" + first + " " + second + ")");
+	    "J" + VariablesToString(join_variables) + "(" + first + " " + second + ")", KeepMinimalKeys(unique_keys));
 }
 
-const MPFPlanNode &MPFPlanEnumerator::AddProject(const MPFPlanNode &child) {
-	// No rows are merged, so the other variables can go
-	return AddNode(MPFPlanNodeType::PROJECT, child.relations, child.required_variables, 1, child.matmul_regions, &child,
-	               nullptr, "P" + VariablesToString(child.required_variables) + "(" + child.description + ")");
+const MPFPlanNode &MPFPlanEnumerator::AddProject(MPFPlanNodeType type, const string &name, const MPFPlanNode &child) {
+	// No rows are merged, so the other variables can go, and the keys without them stay
+	vector<mpf_set_t> unique_keys;
+	for (auto &key : child.unique_keys) {
+		if (!(key & ~child.required_variables)) {
+			unique_keys.push_back(key);
+		}
+	}
+	return AddNode(type, child.relations, child.required_variables, 1, child.matmul_regions, &child, nullptr,
+	               name + VariablesToString(child.required_variables) + "(" + child.description + ")",
+	               std::move(unique_keys));
 }
 
 const MPFPlanNode &MPFPlanEnumerator::ProjectValues(const MPFPlanNode &side) {
-	return side.value_columns == 1 ? side : AddProject(side);
+	return side.value_columns == 1 ? side : AddProject(MPFPlanNodeType::PROJECT, "P", side);
 }
 
 //! A MatMul is C(row, column) = SUM(A(row, k) * B(k, column)). A coordinate may
@@ -116,7 +184,15 @@ const MPFPlanNode &MPFPlanEnumerator::AddAggregate(const MPFPlanNode &child) {
 	}
 	return AddNode(MPFPlanNodeType::AGGREGATE, child.relations, child.required_variables, 1,
 	               input.get().matmul_regions + (is_matmul ? 1 : 0), input.get(), nullptr,
-	               "A" + VariablesToString(child.required_variables) + "(" + input.get().description + ")");
+	               "A" + VariablesToString(child.required_variables) + "(" + input.get().description + ")",
+	               query.has_hints ? vector<mpf_set_t> {child.required_variables} : vector<mpf_set_t>());
+}
+
+const MPFPlanNode &MPFPlanEnumerator::AddAggregateOrOmit(const MPFPlanNode &child) {
+	if (HasUniqueKeyIn(child, child.required_variables)) {
+		return AddProject(MPFPlanNodeType::OMITTED_AGGREGATE, "O", child);
+	}
+	return AddAggregate(child);
 }
 
 bool MPFPlanEnumerator::CanPushDownAggregate(const MPFPlanNode &node) const {
@@ -136,7 +212,7 @@ void MPFPlanEnumerator::Keep(vector<reference<const MPFPlanNode>> &set_plans, co
 	set_plans.push_back(node);
 	// The aggregate of the complete plan is the one of the query
 	if (node.relations != all_relations && CanPushDownAggregate(node)) {
-		set_plans.push_back(AddAggregate(node));
+		set_plans.push_back(AddAggregateOrOmit(node));
 	}
 }
 
@@ -146,7 +222,7 @@ bool MPFPlanEnumerator::Solve(string &reason) {
 		reason = to_string(relation_count) + " relations";
 		return false;
 	}
-	if (query.variables.size() > MPF_MAX_VARIABLES) {
+	if (query.variables.size() + relation_count > MPF_MAX_VARIABLES) {
 		reason = to_string(query.variables.size()) + " variables";
 		return false;
 	}
@@ -167,6 +243,13 @@ bool MPFPlanEnumerator::Solve(string &reason) {
 		mpf_set_t variables = 0;
 		for (auto &variable : relation.variables) {
 			variables |= MPFSetOf(variable);
+		}
+		// With hints, a relation without a key can repeat rows. Row numbers tell these
+		// rows apart, like the row id of a non-functional relation of the Java planners.
+		// Nothing reads them: an aggregate that removes them merges the repeated rows,
+		// since it groups by the other variables.
+		if (query.has_hints && relation.unique_keys.empty()) {
+			variables |= MPFSetOf(query.variables.size() + i);
 		}
 		relation_variables.push_back(variables);
 		if (!relation.measures.empty()) {

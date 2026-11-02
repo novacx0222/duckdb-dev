@@ -18,6 +18,7 @@ namespace duckdb {
 
 class ClientContext;
 class LogicalAggregate;
+struct MPFHints;
 class QueryGraphManager;
 
 //! SET mpf_planner, which the SPALM extension registers
@@ -53,12 +54,17 @@ struct MPFRelation {
 	vector<MPFColumn> measures;
 	//! Whether an operator below can turn a group into NULL, which rules out a MatMul
 	bool can_add_null_groups = false;
+	//! The keys that hints declare, as indexes into MPFQuery::variables. A key
+	//! only counts if the query joins or groups by all of its columns.
+	vector<vector<idx_t>> unique_keys;
 };
 
 //! SELECT <groups>, SUM(m1 * ... * mn) over inner equi-joins of relations
 struct MPFQuery {
 	vector<MPFRelation> relations;
 	vector<MPFVariable> variables;
+	//! Whether there are hints: if so, a relation without a key can repeat rows
+	bool has_hints = false;
 
 	static MPFPlannerType GetPlanner(ClientContext &context);
 	//! SET mpf_force_plan, which the SPALM extension registers, or -1 for no plan
@@ -66,7 +72,7 @@ struct MPFQuery {
 	//! Reads the query from the aggregate above the join graph, which Build has
 	//! extracted. Returns nullptr and sets `reason` unless the query is an MPF.
 	static unique_ptr<MPFQuery> TryBuild(const LogicalAggregate &aggregate, QueryGraphManager &query_graph_manager,
-	                                     string &reason);
+	                                     const MPFHints &hints, string &reason);
 
 	//! The index of the variable that has this column
 	idx_t FindVariable(const ColumnBinding &binding) const;
