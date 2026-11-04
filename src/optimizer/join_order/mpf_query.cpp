@@ -7,7 +7,6 @@
 #include "duckdb/optimizer/join_order/mpf_hints.hpp"
 #include "duckdb/optimizer/join_order/query_graph_manager.hpp"
 #include "duckdb/planner/operator/logical_get.hpp"
-#include "duckdb/planner/operator/logical_join.hpp"
 #include "duckdb/planner/column_binding_map.hpp"
 #include "duckdb/planner/expression/bound_aggregate_expression.hpp"
 #include "duckdb/planner/expression/bound_columnref_expression.hpp"
@@ -192,38 +191,6 @@ static bool CheckRelation(const SingleJoinRelation &relation, string &reason) {
 	return false;
 }
 
-//! An outer join pads its columns with NULL, and ROLLUP and the like drop groups.
-//! SPALM cannot take a NULL row ID, so its optimizer checks the same operators.
-static bool CanAddNullGroups(const LogicalOperator &op) {
-	switch (op.type) {
-	case LogicalOperatorType::LOGICAL_COMPARISON_JOIN:
-	case LogicalOperatorType::LOGICAL_ASOF_JOIN:
-	case LogicalOperatorType::LOGICAL_DELIM_JOIN:
-	case LogicalOperatorType::LOGICAL_ANY_JOIN: {
-		const auto join_type = op.Cast<LogicalJoin>().join_type;
-		if (IsLeftOuterJoin(join_type) || IsRightOuterJoin(join_type) || join_type == JoinType::SINGLE) {
-			return true;
-		}
-		break;
-	}
-	case LogicalOperatorType::LOGICAL_POSITIONAL_JOIN:
-		return true;
-	case LogicalOperatorType::LOGICAL_AGGREGATE_AND_GROUP_BY:
-		if (op.Cast<LogicalAggregate>().grouping_sets.size() > 1) {
-			return true;
-		}
-		break;
-	default:
-		break;
-	}
-	for (auto &child : op.children) {
-		if (CanAddNullGroups(*child)) {
-			return true;
-		}
-	}
-	return false;
-}
-
 //! An equi-join of two columns adds them to one variable, and a predicate on one
 //! relation stays with this relation. Any other filter rules out the query.
 static bool AddFilters(const vector<unique_ptr<FilterInfo>> &filters, const vector<string> &relation_names,
@@ -367,7 +334,6 @@ unique_ptr<MPFQuery> MPFQuery::TryBuild(const LogicalAggregate &aggregate, Query
 		query->relations.emplace_back();
 		query->relations.back().relation_id = i;
 		query->relations.back().name = relation_names.back();
-		query->relations.back().can_add_null_groups = CanAddNullGroups(relations[i]->op);
 	}
 
 	MPFColumns columns(relation_manager.relation_mapping);

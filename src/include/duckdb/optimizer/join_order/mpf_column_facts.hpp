@@ -19,7 +19,9 @@ class LogicalOperator;
 //! What the statistics of the base tables guarantee about a column of a plan. They can
 //! be out of date, but only on the safe side: a deleted NULL still counts as a NULL.
 //! Statistics exist only for base tables, so a column has no facts if it cannot be
-//! traced to them, as with a window function or val + 1.
+//! traced to them, as with a window function or val + 1. Tracing goes only through
+//! the operators and expressions that are known to keep the facts, or to make them;
+//! anything else has none, so a case that nobody thought of is left to DuckDB.
 struct MPFColumnFacts {
 	bool has_no_null = false;
 	bool is_non_negative = false;

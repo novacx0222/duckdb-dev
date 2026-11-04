@@ -99,8 +99,6 @@ private:
 	mpf_set_t integer_variables = 0;
 	//! The relations with a measure that SPALM must not read, see MPFColumnFacts::IsValue
 	mpf_set_t unsafe_value_relations = 0;
-	//! The relations that SPALM cannot read, see MPFRelation::can_add_null_groups
-	mpf_set_t null_group_relations = 0;
 	//! The variables of each relation
 	vector<mpf_set_t> relation_variables;
 	//! The relation names in descriptions, which are unique unlike the names of a self join

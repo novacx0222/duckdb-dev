@@ -182,7 +182,7 @@ bool MPFPlanEnumerator::AreCoordinates(mpf_set_t variables, mpf_set_t relations)
 //! A MatMul is C(row, column) = SUM(A(row, k) * B(k, column)). A coordinate may
 //! repeat, since SPALM can sum the entries in the CSR (SET spalm_duplicates).
 bool MPFPlanEnumerator::IsMatMul(mpf_set_t groups, const MPFPlanNode &node) const {
-	if (node.type != MPFPlanNodeType::JOIN || (node.relations & (null_group_relations | unsafe_value_relations))) {
+	if (node.type != MPFPlanNodeType::JOIN || (node.relations & unsafe_value_relations)) {
 		return false;
 	}
 	auto &left = *node.left;
@@ -285,9 +285,6 @@ bool MPFPlanEnumerator::Solve(string &reason) {
 		relation_variables.push_back(variables);
 		if (!relation.measures.empty()) {
 			measure_relations |= MPFSetOf(i);
-		}
-		if (relation.can_add_null_groups) {
-			null_group_relations |= MPFSetOf(i);
 		}
 		for (auto &measure : relation.measures) {
 			if (!measure.facts.IsValue()) {

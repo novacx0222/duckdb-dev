@@ -82,7 +82,9 @@ static MPFColumnFacts FactsOfExpression(ClientContext &context, const LogicalOpe
 		return facts;
 	}
 	case ExpressionClass::BOUND_AGGREGATE: {
-		// A group has at least one row, so a sum of numbers that are not NULL is not NULL
+		// A sum of numbers that are not NULL is not NULL, if there is at least one: the
+		// aggregate checks that it has a GROUP BY, since without one an empty input still
+		// gives a row
 		auto &aggregate = expr.Cast<BoundAggregateExpression>();
 		if (aggregate.function.name != "sum" || aggregate.children.size() != 1 || aggregate.filter) {
 			return facts;
@@ -105,16 +107,47 @@ static MPFColumnFacts FactsOfChildColumn(ClientContext &context, const LogicalOp
 	return MPFColumnFacts();
 }
 
-//! The output of an inner equi-join has no NULL in the keys, and the keys are equal, so
-//! a key has what its partner is known to have. A later optimizer can replace one key
-//! by the other, so this is what makes the facts independent of which one a plan reads.
-static MPFColumnFacts FactsOfJoinColumn(ClientContext &context, const LogicalComparisonJoin &join,
+//! Whether a join passes the values of this child as they are. An outer join pads the
+//! columns of a child with NULL where a row of the other child has no partner.
+static bool KeepsValuesOf(JoinType join_type, idx_t child) {
+	switch (join_type) {
+	case JoinType::INNER:
+	case JoinType::SEMI:
+	case JoinType::ANTI:
+	case JoinType::RIGHT_SEMI:
+	case JoinType::RIGHT_ANTI:
+	case JoinType::MARK:
+		return true;
+	case JoinType::LEFT:
+	case JoinType::SINGLE:
+		return child == 0;
+	case JoinType::RIGHT:
+		return child == 1;
+	default:
+		// OUTER pads both children
+		return false;
+	}
+}
+
+//! A join passes the columns of its children, unless it pads them. The output of an
+//! inner equi-join has no NULL in the keys, and the keys are equal, so a key has what
+//! its partner is known to have. A later optimizer can replace one key by the other, so
+//! this is what makes the facts independent of which one a plan reads.
+static MPFColumnFacts FactsOfJoinColumn(ClientContext &context, const LogicalJoin &join,
                                         const ColumnBinding &column) {
-	auto facts = FactsOfChildColumn(context, join, column);
-	if (join.join_type != JoinType::INNER) {
+	MPFColumnFacts facts;
+	for (idx_t child = 0; child < join.children.size(); child++) {
+		if (HasProducer(*join.children[child], column.table_index)) {
+			if (KeepsValuesOf(join.join_type, child)) {
+				facts = FactsOfColumn(context, *join.children[child], column);
+			}
+			break;
+		}
+	}
+	if (join.type != LogicalOperatorType::LOGICAL_COMPARISON_JOIN || join.join_type != JoinType::INNER) {
 		return facts;
 	}
-	for (auto &condition : join.conditions) {
+	for (auto &condition : join.Cast<LogicalComparisonJoin>().conditions) {
 		if (condition.comparison != ExpressionType::COMPARE_EQUAL ||
 		    condition.left->GetExpressionClass() != ExpressionClass::BOUND_COLUMN_REF ||
 		    condition.right->GetExpressionClass() != ExpressionClass::BOUND_COLUMN_REF) {
@@ -132,12 +165,30 @@ static MPFColumnFacts FactsOfJoinColumn(ClientContext &context, const LogicalCom
 	return facts;
 }
 
+//! The facts come from a list of operators that are known to keep or to make them. Any
+//! other operator, including one of a later DuckDB, has none: it could pad a column
+//! with NULL, as a POSITIONAL JOIN does, or compute it, as UNNEST does.
 static MPFColumnFacts FactsOfColumn(ClientContext &context, const LogicalOperator &op, const ColumnBinding &column) {
 	if (!IsProducer(op, column.table_index)) {
-		if (op.type == LogicalOperatorType::LOGICAL_COMPARISON_JOIN) {
-			return FactsOfJoinColumn(context, op.Cast<LogicalComparisonJoin>(), column);
+		switch (op.type) {
+		// They drop rows, repeat them, or add columns, but pass the values of a column
+		case LogicalOperatorType::LOGICAL_FILTER:
+		case LogicalOperatorType::LOGICAL_ORDER_BY:
+		case LogicalOperatorType::LOGICAL_TOP_N:
+		case LogicalOperatorType::LOGICAL_LIMIT:
+		case LogicalOperatorType::LOGICAL_SAMPLE:
+		case LogicalOperatorType::LOGICAL_DISTINCT:
+		case LogicalOperatorType::LOGICAL_WINDOW:
+		case LogicalOperatorType::LOGICAL_CROSS_PRODUCT:
+			return FactsOfChildColumn(context, op, column);
+		case LogicalOperatorType::LOGICAL_COMPARISON_JOIN:
+		case LogicalOperatorType::LOGICAL_DELIM_JOIN:
+		case LogicalOperatorType::LOGICAL_ANY_JOIN:
+		case LogicalOperatorType::LOGICAL_ASOF_JOIN:
+			return FactsOfJoinColumn(context, op.Cast<LogicalJoin>(), column);
+		default:
+			return MPFColumnFacts();
 		}
-		return FactsOfChildColumn(context, op, column);
 	}
 	auto producer = &op;
 	switch (producer->type) {
@@ -159,7 +210,12 @@ static MPFColumnFacts FactsOfColumn(ClientContext &context, const LogicalOperato
 			return FactsOfExpression(context, input, *aggregate.groups[column.column_index]);
 		}
 		if (column.table_index == aggregate.aggregate_index && column.column_index < aggregate.expressions.size()) {
-			return FactsOfExpression(context, input, *aggregate.expressions[column.column_index]);
+			auto facts = FactsOfExpression(context, input, *aggregate.expressions[column.column_index]);
+			// Without GROUP BY, an empty input gives one row, with a NULL sum
+			if (aggregate.groups.empty()) {
+				facts.has_no_null = false;
+			}
+			return facts;
 		}
 		return MPFColumnFacts();
 	}

@@ -55,8 +55,6 @@ struct MPFRelation {
 	vector<idx_t> variables;
 	//! The factors of the product read from this relation; a measure can repeat
 	vector<MPFColumn> measures;
-	//! Whether an operator below can turn a group into NULL, which rules out a MatMul
-	bool can_add_null_groups = false;
 	//! The keys that hints declare, as indexes into MPFQuery::variables. A key
 	//! only counts if the query joins or groups by all of its columns.
 	vector<vector<idx_t>> unique_keys;
